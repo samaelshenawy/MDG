@@ -1,0 +1,25 @@
+  METHOD if_mdg_bs_bp_access_handler~get_object_data_by_entity.
+
+    FIELD-SYMBOLS:
+                       <ls_data_ext> TYPE mdg_bs_bp_s_ecc_extern.
+
+    CLEAR: ef_not_found, er_data.
+* only consider custom entities
+    IF NOT ( iv_entity = gc_qualc_entity ).
+      RETURN.
+    ENDIF.
+
+* get data record for partner id
+    READ TABLE gt_ecc_extern_db
+      ASSIGNING <ls_data_ext>
+      WITH KEY partner-header-object_instance-bpartner = iv_partner.
+
+* export data reference
+    IF sy-subrc IS INITIAL.
+      GET REFERENCE OF <ls_data_ext> INTO er_data.
+    ELSE.
+      CLEAR: er_data.
+      ef_not_found = abap_true.
+    ENDIF.
+
+  ENDMETHOD.
