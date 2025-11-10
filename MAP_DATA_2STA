@@ -1,0 +1,68 @@
+  METHOD if_mdg_bs_bp_access_handler~map_data_2sta.
+
+    DATA target TYPE zmdg_s_bp_pp_zqualc.
+    FIELD-SYMBOLS:
+      <lt_mlt_as>    TYPE ANY TABLE,
+      <ls_data>      TYPE data,
+      <ls_bp_header> TYPE bus_ei_extern,
+      <lv_partner>   TYPE bu_partner,
+      <lv_partner2>  TYPE bu_partner,
+      <lv_as_id>     TYPE any.
+
+    DATA: mapping TYPE smt_map VALUE gc_qualc_2sta,
+          step    TYPE smt_mapping_step,
+          smt     TYPE REF TO cl_smt_engine,
+          lr_data TYPE REF TO data.
+    CREATE DATA lr_data LIKE LINE OF ct_data.
+    IF lr_data IS BOUND.
+      ASSIGN lr_data->* TO FIELD-SYMBOL(<data>).
+    ENDIF.
+    IF <data> IS NOT ASSIGNED.
+      RETURN.
+    ENDIF.
+    ASSIGN COMPONENT 'PARTNER' OF STRUCTURE is_data TO <ls_bp_header>.
+
+
+    LOOP AT gt_ecc_extern_db ASSIGNING FIELD-SYMBOL(<ls_extern_db>)
+               WHERE partner-header-object_instance-bpartner = <ls_bp_header>-header-object_instance-bpartner.
+
+      LOOP AT <ls_extern_db>-partner-central_data-qual_cntrs-qual_cntrs
+        ASSIGNING FIELD-SYMBOL(<fs_data>).
+        CLEAR target.
+
+        CLEAR smt.
+
+        step = gc_qualc_data_stp.
+        TRY.
+            me->get_smt_engine(
+       EXPORTING
+         iv_mapping      = mapping
+         iv_mapping_step = step
+       IMPORTING
+         er_smt_engine   = smt
+       CHANGING
+         ct_return       = ct_return ).
+            IF smt IS NOT BOUND.
+              RETURN.
+            ENDIF.
+            smt->execute(
+              EXPORTING
+                i_source  = <fs_data>-data
+                i_add1    = <fs_data>-data_key
+              CHANGING
+                ch_target = target ).
+
+
+          CATCH cx_smt_customizing_error cx_smt_transformation_error.
+            MESSAGE ID gc_map_msg_class TYPE 'E' NUMBER '000' WITH step mapping INTO sy-ucomm.
+            exception_message_store( EXPORTING iv_exist_check = abap_true CHANGING ct_return = ct_return ).
+            RETURN.
+        ENDTRY.
+        "map to the requested CT_DATA structure
+        target-bp_header = <ls_bp_header>-header-object_instance-bpartner.
+        CLEAR <data>.
+        MOVE-CORRESPONDING target TO <data>.
+        INSERT <data> INTO TABLE ct_data.
+      ENDLOOP.
+    ENDLOOP.
+  ENDMETHOD.
