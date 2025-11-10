@@ -1,0 +1,106 @@
+  METHOD if_mdg_bs_bp_access_handler~map_data_2api.
+
+        DATA: target  TYPE zmdg_bp_qual_cntrs_st,
+          source  TYPE zmdg_s_bp_pp_zqualc,
+          mapping TYPE smt_map VALUE gc_qualc_2api,
+          smt     TYPE REF TO cl_smt_engine,
+          step    TYPE smt_mapping_step.
+
+    FIELD-SYMBOLS:
+      <ls_ext_bp>   TYPE bus_ei_extern.
+
+    IF is_data IS INITIAL.
+      RETURN.
+    ENDIF.
+
+
+    CASE iv_entity.
+      WHEN gc_qualc_entity.
+
+        ASSIGN COMPONENT 'PARTNER' OF STRUCTURE cs_data_ext TO <ls_ext_bp>.
+
+        IF <ls_ext_bp> IS NOT ASSIGNED.
+          RETURN.
+        ENDIF.
+
+        MOVE-CORRESPONDING is_data TO source.
+
+        IF iv_task = gc_upd.
+          ASSIGN COMPONENT iv_fname OF STRUCTURE is_data TO FIELD-SYMBOL(<data_x>).
+*          MOVE-CORRESPONDING <data_x> TO source_x.
+        ENDIF.
+
+
+        READ TABLE <ls_ext_bp>-central_data-qual_cntrs-qual_cntrs
+        ASSIGNING FIELD-SYMBOL(<fs_qualc>)
+         WITH KEY data_key-qual_cntry = source-zqual_cnt.
+        IF sy-subrc <> 0 AND <fs_qualc> IS NOT ASSIGNED."creation
+
+          target-task = iv_task.
+          INSERT target INTO TABLE <ls_ext_bp>-central_data-qual_cntrs-qual_cntrs
+          ASSIGNING <fs_qualc>.
+
+        ENDIF.
+        READ TABLE gt_mapper_entities TRANSPORTING NO FIELDS WITH KEY table_line = gc_qualc_entity.
+        IF sy-subrc <> 0.
+
+          TRY.
+
+              IF iv_task = if_mdg_bp_constants=>gc_task-insert
+              OR iv_task = if_mdg_bp_constants=>gc_task-update.
+                CLEAR smt.
+
+                step = GC_QUALC_KEY_STP.
+                me->get_smt_engine(
+                  EXPORTING
+                    iv_mapping      = mapping
+                    iv_mapping_step = step
+                  IMPORTING
+                    er_smt_engine   = smt
+                  CHANGING
+                    ct_return       = ct_return ).
+                IF smt IS NOT BOUND.
+                  RETURN.
+                ENDIF.
+                smt->execute(
+                  EXPORTING i_source  = source
+                  CHANGING  ch_target = target-data_key ).
+
+                CLEAR smt.
+                step = GC_QUALC_DATA_STP.
+                me->get_smt_engine(
+                  EXPORTING
+                    iv_mapping      = mapping
+                    iv_mapping_step = step
+                  IMPORTING
+                    er_smt_engine   = smt
+                  CHANGING
+                    ct_return       = ct_return ).
+                IF smt IS NOT BOUND.
+                  RETURN.
+                ENDIF.
+                smt->execute(
+                  EXPORTING i_source  = source
+                  CHANGING  ch_target = target-data ).
+
+              ENDIF.
+
+
+            CATCH cx_smt_customizing_error cx_smt_transformation_error.
+              MESSAGE ID gc_map_msg_class TYPE 'E' NUMBER '000' WITH step mapping INTO sy-ucomm.
+              exception_message_store( EXPORTING iv_exist_check = abap_true CHANGING ct_return = ct_return ).
+              RETURN.
+          ENDTRY.
+        ENDIF.
+**********************************************************************************************
+        target-datax-issued_by = abap_true.
+        target-datax-issued_on = abap_true.
+        target-datax-status = abap_true.
+        <fs_qualc> = target.
+        <ls_ext_bp>-central_data-qual_cntrs-current_state = abap_true.
+*******************************************************************************************
+        cv_xchange = abap_true.
+      WHEN OTHERS.
+    ENDCASE.
+
+  ENDMETHOD.
