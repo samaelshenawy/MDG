@@ -1,0 +1,270 @@
+  METHOD if_mdg_bs_bp_access_handler~read_object_data.
+    DATA:
+      lt_supplier        TYPE cvis_ei_extern_t,
+      lt_customer        TYPE cvis_ei_extern_t,
+      ls_as_vendor       TYPE cvis_ei_extern,
+      ls_as_customer     TYPE cvis_ei_extern,
+      ls_mlt_as_old      TYPE mdg_bs_bp_s_mlt_as_mem,
+      lt_mlt_as          TYPE mdg_bs_bp_tt_mlt_as,
+      lt_mlt_as_old_supp TYPE mdg_bs_bp_tt_mlt_as_mem,
+      lt_mlt_as_old_cust TYPE mdg_bs_bp_tt_mlt_as_mem,
+      lt_mlt_as_ret      TYPE mdg_bs_bp_tt_mlt_as_mem,
+      lv_lifnr           TYPE lifnr,
+      lv_kunnr           TYPE kunnr,
+      ls_ecc_extern_db   TYPE mdg_bs_bp_s_ecc_extern,
+      ls_vendor          TYPE mdg_bs_bp_s_mlt_as_suppl,
+      ls_customer        TYPE mdg_bs_bp_s_mlt_as_cust,
+      lt_return          TYPE bapiret2_t ##needed,
+      lv_continue_s      TYPE abap_bool,
+      lv_continue_c      TYPE abap_bool.
+
+    FIELD-SYMBOLS:
+      <ls_mlt_as_old>    TYPE mdg_bs_bp_s_mlt_as_mem,
+      <ls_ei_supp>       TYPE cvis_ei_extern,
+      <ls_ei_cust>       TYPE cvis_ei_extern,
+      <ls_ecc_extern_db> TYPE mdg_bs_bp_s_ecc_extern,
+      <ls_idlist>        TYPE bus_ei_instance,
+      <ls_extern_db>     LIKE LINE OF gt_ecc_extern_db,
+      <ls_vendor>        TYPE mdg_bs_bp_s_mlt_as_suppl,
+      <ls_customer>      TYPE mdg_bs_bp_s_mlt_as_cust.
+* global DB tables are filled here
+* EHP5: gt_cvis_data_db -> contains data of standard supplier
+* EHP6: gt_ecc_extern_db -> contains all assigned supplier (incl. multiple assignment data)
+* (every handler has it's own instance of these tables)
+* NOTE: Multiple Assignment Handler reads all assignments, but in case a standard supplier is assigned to BP
+* and no record exists in table MDG_MLT_ASSGNMNT, this record has to be simulated here and will be appended to DB state
+    CHECK it_idlist IS NOT INITIAL.
+
+* flag controls if data for all entities have to be read
+*    CHECK iv_read_all IS NOT INITIAL.
+
+* assigned vendor to BP is read (can be only one per BP)
+    CALL METHOD me->read_vendor
+      EXPORTING
+        it_idlist   = it_idlist
+      IMPORTING
+        et_supplier = lt_supplier. "note: lt_supplier may have an entry even if no supplier exists (in case it_idlist has mor than
+    "one entry), vendor structure is empty then
+
+    LOOP AT it_idlist ASSIGNING <ls_idlist> .
+      lv_continue_s = abap_true.
+      lv_continue_c = abap_true.
+      CLEAR ls_ecc_extern_db.
+
+* read all supplier/customer assignments for BP from DB (standard and additional assignments)
+* buffer table of each handler has to store ALL assignments (supplier & customer)
+* in method 'read_object_data_by_entitythe entity BP_MLT_AS is handled by all handlers
+      CHECK <ls_idlist> IS ASSIGNED AND gc_as_cat_suppl IS NOT INITIAL. " Avoid runtime of Handler >> Sama 14.09
+      IF go_mlt_as_api IS INITIAL.
+        go_mlt_as_api = cl_mdg_bs_bp_mlt_assgnmnt_api=>get_instance( ).
+      ENDIF.
+
+      CALL METHOD go_mlt_as_api->get_list_mlt_assgnmnt
+        EXPORTING
+          iv_partner        = <ls_idlist>-bpartner
+          iv_assignment_cat = gc_as_cat_suppl
+        IMPORTING
+          et_mlt_as         = lt_mlt_as " supplier assignments only
+          et_message        = lt_return.
+
+      MOVE-CORRESPONDING lt_mlt_as TO lt_mlt_as_old_supp.
+
+* get data of standard vendor
+      READ TABLE lt_supplier ASSIGNING <ls_ei_supp>
+                              WITH KEY partner-header-object_instance-bpartner = <ls_idlist>-bpartner.
+      IF sy-subrc <> 0 AND <ls_ei_supp> IS NOT ASSIGNED.
+        lv_continue_s = abap_false.
+      ELSE.
+        IF <ls_ei_supp>-vendor-header IS INITIAL.
+          lv_continue_s = abap_false.
+        ENDIF.
+      ENDIF.
+
+      IF lv_continue_s = abap_true.
+* get corresponding assignment_id for standard supplier
+        READ TABLE lt_mlt_as_old_supp ASSIGNING <ls_mlt_as_old>
+                                       WITH KEY partner = <ls_idlist>-bpartner standard = abap_true.
+        IF sy-subrc <> 0 AND <ls_mlt_as_old> IS ASSIGNED. "should always be assigned
+          ls_vendor-assignment_id = <ls_mlt_as_old>-assignment_id.
+          ls_vendor-vendor        = <ls_ei_supp>-vendor.
+* vendor does not have standard assigment/we simulate one/will be written when activating/ assignment ID of
+* standard supplieris always '1'
+        ELSE.
+          ls_vendor-assignment_id      = gc_standard_as_id_suppl. " '1'
+          ls_vendor-vendor             = <ls_ei_supp>-vendor.
+* create multiple assignment record
+          ls_mlt_as_old-partner        = <ls_idlist>-bpartner.
+          ls_mlt_as_old-assignment_id  = gc_standard_as_id_suppl.
+          ls_mlt_as_old-assignment_cat = gc_as_cat_suppl.
+          ls_mlt_as_old-object_id      = ls_vendor-vendor-header-object_instance-lifnr.
+          ls_mlt_as_old-standard       = abap_true.
+          ls_mlt_as_old-updateflag     = gc_simulated_db_record. "Simulated DB record/has to be written in save later on
+          APPEND ls_mlt_as_old TO lt_mlt_as_ret. " no append necessary for lt_mlt_as_old
+        ENDIF.
+
+* check if there is already a record for BP in DB buffer table +
+        UNASSIGN <ls_ecc_extern_db>.                        "1618668
+        READ TABLE gt_ecc_extern_db ASSIGNING <ls_ecc_extern_db>
+                                     WITH KEY partner-header-object_instance-bpartner = <ls_ei_supp>-partner-header-object_instance-bpartner.
+
+*        IF sy-subrc <> 0 AND <ls_ecc_extern_db> IS ASSIGNED.
+*        IF sy-subrc <> 0 AND <ls_ecc_extern_db> IS ASSIGNED.
+        IF sy-subrc LT 4.
+* check if vendor is already in DB buffer table
+          READ TABLE <ls_ecc_extern_db>-vendors
+          WITH KEY assignment_id = ls_vendor-assignment_id
+          vendor-header-object_instance-lifnr = <ls_ei_supp>-vendor-header-object_instance-lifnr TRANSPORTING NO FIELDS.
+          IF sy-subrc <> 0.
+            APPEND ls_vendor TO <ls_ecc_extern_db>-vendors.
+          ENDIF.
+          RETURN.
+        ELSE.
+* create complete record
+          ls_ecc_extern_db-partner-header-object_instance = <ls_idlist>.
+          APPEND ls_vendor        TO ls_ecc_extern_db-vendors.
+          APPEND ls_ecc_extern_db TO gt_ecc_extern_db ASSIGNING <ls_ecc_extern_db>.
+        ENDIF.
+        IF <ls_ecc_extern_db> IS NOT ASSIGNED.
+          RETURN.
+        ENDIF.
+* special handling for multiple assignments:
+* in case a multiple assignment record for standard vendor was simulated (if cvi_vend_link exist but no entry
+* in table MDG_MLT_ASSGNMNT) then only this record is bufferd by customer handler and has to be stored here
+        <ls_ecc_extern_db>-mlt_assignments = lt_mlt_as_ret.
+
+* read all additional suppliers
+        LOOP AT lt_mlt_as_old_supp ASSIGNING <ls_mlt_as_old> WHERE assignment_cat = gc_as_cat_suppl. "#needed
+* data of standard supplier has been already appended to table gt_ecc_extern_db, here only the additional assignments are treated
+          IF <ls_mlt_as_old>-standard = abap_true.
+            CONTINUE.
+          ENDIF.
+* read data of assigned supplier
+          CLEAR ls_as_vendor .
+          lv_lifnr = <ls_mlt_as_old>-object_id.
+
+
+        ENDLOOP. " LOOP AT lt_mlt_as_old
+        ENDIF.
+* customer part for mlt asgn
+        CLEAR:
+          lt_mlt_as_ret.
+
+        UNASSIGN:
+          <ls_mlt_as_old>.
+
+        CALL METHOD go_mlt_as_api->get_list_mlt_assgnmnt
+          EXPORTING
+            iv_partner        = <ls_idlist>-bpartner
+            iv_assignment_cat = gc_as_cat_cust
+          IMPORTING
+            et_mlt_as         = lt_mlt_as " supplier assignments only
+            et_message        = lt_return.
+
+        MOVE-CORRESPONDING lt_mlt_as TO lt_mlt_as_old_cust.
+
+* get data of standard customer
+        READ TABLE lt_customer ASSIGNING <ls_ei_cust>
+                               WITH KEY partner-header-object_instance-bpartner = <ls_idlist>-bpartner.
+        IF sy-subrc <> 0 AND <ls_ei_cust> IS NOT ASSIGNED.
+          lv_continue_c = abap_false.
+        ELSE.
+          IF <ls_ei_cust>-customer-header IS INITIAL.
+            lv_continue_c = abap_false.
+          ENDIF.
+        ENDIF.
+
+        IF lv_continue_c = abap_true.
+* get corresponding assignment_id for standard customer
+          READ TABLE lt_mlt_as_old_cust ASSIGNING <ls_mlt_as_old>
+                                         WITH KEY partner = <ls_idlist>-bpartner standard = abap_true.
+          IF sy-subrc <> 0 AND <ls_mlt_as_old> IS ASSIGNED. "should always be assigned
+            ls_customer-assignment_id = <ls_mlt_as_old>-assignment_id.
+            ls_customer-customer      = <ls_ei_cust>-customer.
+
+* customer does not have standard assigment/we simulate one/will be written when activating/ assignment ID of
+* standard customers always '1'
+          ELSE.
+            ls_customer-assignment_id = gc_standard_as_id_cust. " '1'
+            ls_customer-customer      = <ls_ei_cust>-customer.
+* create multiple assignment record
+            ls_mlt_as_old-partner        = <ls_idlist>-bpartner.
+            ls_mlt_as_old-assignment_id  = gc_standard_as_id_cust.
+            ls_mlt_as_old-assignment_cat = gc_as_cat_cust.
+            ls_mlt_as_old-object_id      = ls_customer-customer-header-object_instance-kunnr.
+            ls_mlt_as_old-standard       = abap_true.
+            ls_mlt_as_old-updateflag     = gc_simulated_db_record. "Simulated DB record/has to be written in save later on
+            APPEND ls_mlt_as_old TO lt_mlt_as_ret. " no append necessary for lt_mlt_as_old
+          ENDIF.
+
+* check if there is already a record for BP in DB buffer table +
+          UNASSIGN <ls_ecc_extern_db>.                      "1618668
+          READ TABLE gt_ecc_extern_db ASSIGNING <ls_ecc_extern_db>
+                                       WITH KEY partner-header-object_instance-bpartner = <ls_ei_cust>-partner-header-object_instance-bpartner.
+*        IF sy-subrc <> 0 AND <ls_ecc_extern_db> IS ASSIGNED.
+          IF sy-subrc LT 4 . "MM
+* check if customer is already in DB buffer table
+            READ TABLE <ls_ecc_extern_db>-customers
+            WITH KEY assignment_id = ls_customer-assignment_id
+            customer-header-object_instance-kunnr = <ls_ei_cust>-customer-header-object_instance-kunnr TRANSPORTING NO FIELDS.
+            IF sy-subrc <> 0.
+              APPEND ls_customer TO <ls_ecc_extern_db>-customers.
+            ENDIF.
+          ELSE.
+* create complete record
+            ls_ecc_extern_db-partner-header-object_instance = <ls_idlist>.
+            APPEND ls_customer      TO ls_ecc_extern_db-customers.
+            APPEND ls_ecc_extern_db TO gt_ecc_extern_db ASSIGNING <ls_ecc_extern_db>.
+          ENDIF.
+          IF <ls_ecc_extern_db> IS NOT ASSIGNED.
+            RETURN.
+          ENDIF.
+* special handling for multiple assignments:
+* in case a multiple assignment record for standard vendor was simulated (if cvi_vend_link exist but no entry
+* in table MDG_MLT_ASSGNMNT) then only this record is bufferd by customer handler and has to be stored here
+          <ls_ecc_extern_db>-mlt_assignments = lt_mlt_as_ret.
+
+        ENDIF.
+      ENDLOOP. " LOOP AT it_id_list
+**************************************************
+
+
+
+
+*******************Our Own Custom entity data ***********************
+
+      LOOP AT it_idlist ASSIGNING <ls_idlist>.
+        IF gt_ecc_extern_db IS NOT INITIAL.
+          LOOP AT gt_ecc_extern_db ASSIGNING <ls_extern_db>
+            WHERE partner-header-object_instance-bpartner = <ls_idlist>-bpartner.
+
+            SELECT * FROM zmdg_a_qual_cntr
+              INTO TABLE @DATA(lt_qualc)
+              WHERE partner =
+              @<ls_extern_db>-partner-header-object_instance-bpartner.
+              IF sy-subrc = 0.
+                <ls_extern_db>-partner-central_data-qual_cntrs-current_state =
+                abap_true.
+
+                LOOP AT lt_qualc ASSIGNING FIELD-SYMBOL(<ls_qualc>).
+                  READ TABLE <ls_extern_db>-partner-central_data-qual_cntrs-qual_cntrs
+                   TRANSPORTING NO FIELDS WITH KEY
+                   data_key-qual_cntry = <ls_qualc>-qual_cntry.
+                  IF sy-subrc <> 0.
+                    INSERT VALUE #(
+                     data_key-qual_cntry = <ls_qualc>-qual_cntry
+                     data-issued_by = <ls_qualc>-issued_by
+                     data-issued_on = <ls_qualc>-issued_on
+                     data-status = <ls_qualc>-status )
+                     INTO TABLE <ls_extern_db>-partner-central_data-qual_cntrs-qual_cntrs.
+                  ENDIF.
+                ENDLOOP.
+              ENDIF.
+
+
+            ENDLOOP.
+          ENDIF.
+
+        ENDLOOP.
+
+
+      ENDMETHOD.
