@@ -1,0 +1,65 @@
+  method READ_VENDOR.
+     DATA: lo_ka_bp_vendor    TYPE REF TO cvi_ka_bp_vendor,
+         ls_bp_suppl_link   TYPE ty_bp_suppl_link,
+         gt_bp_suppl_link TYPE tty_bp_suppl_link,
+         ls_vmds_ei_main    TYPE vmds_ei_main,
+         ls_vmds_ei_extern  TYPE vmds_ei_extern,
+         ls_vmds_ei_main_in TYPE vmds_ei_main,
+         ls_cvis_extern     TYPE cvis_ei_extern,
+         lv_partner_guid    TYPE bu_partner_guid.
+
+   FIELD-SYMBOLS: <ls_idlist> TYPE bus_ei_instance.
+
+* read connection between vendor and business partner
+   lo_ka_bp_vendor = cvi_ka_bp_vendor=>get_instance( ).
+   LOOP AT it_idlist ASSIGNING <ls_idlist>.
+* check existence in global table
+     ls_bp_suppl_link-bpartner = <ls_idlist>-bpartner.
+     lv_partner_guid = <ls_idlist>-bpartnerguid.
+     IF lv_partner_guid IS INITIAL.
+       CALL FUNCTION 'BUPA_NUMBERS_GET'
+         EXPORTING
+           iv_partner      = ls_bp_suppl_link-bpartner
+         IMPORTING
+           ev_partner_guid = lv_partner_guid.
+     ENDIF.
+
+     lo_ka_bp_vendor->get_assigned_vendor_for_bp( EXPORTING i_partner = lv_partner_guid
+                                                  RECEIVING r_vendor = ls_bp_suppl_link-supplier
+                                                  EXCEPTIONS OTHERS = 1 ).
+     IF sy-subrc = 0 AND ls_bp_suppl_link-supplier IS NOT INITIAL.
+       APPEND ls_bp_suppl_link TO gt_bp_suppl_link.
+       ls_vmds_ei_extern-header-object_task = 'M'.
+       ls_vmds_ei_extern-header-object_instance-lifnr = ls_bp_suppl_link-supplier.
+       APPEND ls_vmds_ei_extern TO ls_vmds_ei_main_in-vendors.
+       CLEAR: ls_vmds_ei_extern.
+     ENDIF.
+   ENDLOOP.
+
+   IF NOT ls_vmds_ei_main_in IS INITIAL.
+* Extract Vendors
+     vmd_ei_api_extract=>get_data(
+     EXPORTING is_master_data = ls_vmds_ei_main_in
+       IMPORTING
+         es_master_data = ls_vmds_ei_main
+         EXCEPTIONS OTHERS = 1 ).
+     IF sy-subrc <> 0.
+       RETURN.
+     ENDIF.
+     LOOP AT it_idlist ASSIGNING <ls_idlist>.
+       ls_cvis_extern-partner-header-object_instance-bpartner = <ls_idlist>-bpartner.
+       CLEAR ls_cvis_extern-vendor.
+* Vendor
+       READ TABLE gt_bp_suppl_link
+       INTO ls_bp_suppl_link WITH KEY bpartner = <ls_idlist>-bpartner.
+       IF sy-subrc = 0.
+         READ TABLE ls_vmds_ei_main-vendors INTO ls_vmds_ei_extern
+          WITH KEY header-object_instance-lifnr = ls_bp_suppl_link-supplier.
+         IF sy-subrc = 0.
+           ls_cvis_extern-vendor = ls_vmds_ei_extern.
+         ENDIF.
+       ENDIF.
+       APPEND ls_cvis_extern TO et_supplier.
+     ENDLOOP.
+   ENDIF.
+  endmethod.
