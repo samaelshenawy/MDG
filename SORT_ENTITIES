@@ -1,0 +1,12 @@
+  method IF_MDG_BS_BP_ACCESS_HANDLER~SORT_ENTITIES.
+DATA:
+      lt_entity TYPE TABLE OF ty_usmd_entity,
+      lv_entity TYPE ty_usmd_entity.
+* customer entities are appended to table ct_entities which already at least contains BP entities sorted by
+* BP handler before
+    lt_entity = it_entities_all.
+    READ TABLE lt_entity WITH KEY entity = gc_qualc_entity INTO lv_entity.
+    IF sy-subrc = 0.
+      APPEND lv_entity TO ct_entities.
+      ENDIF.
+  endmethod.
