@@ -1,0 +1,120 @@
+  METHOD if_mdg_bs_bp_access_handler~save_additional_object_data.
+
+    FIELD-SYMBOLS:
+      <lt_data_new> TYPE mdg_bs_bp_s_ecc_extern,
+      <lt_data_db>  TYPE mdg_bs_bp_s_ecc_extern,
+      <ls_partner>  TYPE bus_ei_extern,
+      <ls_data>     TYPE zmdg_a_qual_cntr,
+      <ls_data_db>  TYPE zmdg_a_qual_cntr,
+      <ls_qual>     TYPE zmdg_bp_qual_cntrs_st,
+      <ls_data_ext> TYPE mdg_bs_bp_s_ecc_extern.
+    DATA:
+      lt_current_qual  TYPE TABLE OF zmdg_a_qual_cntr,
+      lt_database_qual TYPE TABLE OF zmdg_a_qual_cntr,
+      ls_database_qual TYPE zmdg_a_qual_cntr,
+      lt_ins           TYPE TABLE OF zmdg_a_qual_cntr,
+      lt_upd           TYPE TABLE OF zmdg_a_qual_cntr,
+      lt_del           TYPE TABLE OF zmdg_a_qual_cntr,
+      ls_data          TYPE zmdg_a_qual_cntr,
+      lr_ecc_extern_db TYPE REF TO data.
+    ASSIGN is_data TO <lt_data_new>.
+    ASSIGN COMPONENT 'PARTNER' OF STRUCTURE is_data TO <ls_partner>.
+    IF <ls_partner> IS NOT ASSIGNED."make sure that the partner data is present
+      RETURN.
+    ENDIF.
+
+
+    READ TABLE gt_ecc_extern_db ASSIGNING <ls_data_ext>
+    WITH KEY partner-header-object_instance-bpartner = <ls_partner>-header-object_instance-bpartner.
+
+    IF <ls_data_ext> IS ASSIGNED.
+      ASSIGN <ls_data_ext> TO <lt_data_db>.
+    ELSE.
+      CREATE DATA lr_ecc_extern_db TYPE mdg_bs_bp_s_ecc_extern.
+      ASSIGN lr_ecc_extern_db->* TO <lt_data_db>.
+    ENDIF.
+
+
+    LOOP AT <ls_partner>-central_data-qual_cntrs-qual_cntrs ASSIGNING <ls_qual>.
+
+      CLEAR: ls_data.
+      ASSERT NOT <ls_partner>-header-object_instance-bpartner IS INITIAL.
+      ls_data-partner    = <ls_partner>-header-object_instance-bpartner.
+      ls_data-qual_cntry = <ls_qual>-data_key-qual_cntry.
+      ls_data-status     = <ls_qual>-data-status.
+      ls_data-issued_by  = <ls_qual>-data-issued_by.
+      ls_data-issued_on  = <ls_qual>-data-issued_on.
+      CASE <ls_qual>-task.
+        WHEN gc_del.
+          APPEND ls_data TO lt_del.
+        WHEN gc_ins.
+          APPEND ls_data TO lt_ins.
+        WHEN gc_upd.
+          APPEND ls_data TO lt_upd.
+      ENDCASE.
+    ENDLOOP.
+* database data
+
+    LOOP AT <ls_partner>-central_data-qual_cntrs-qual_cntrs ASSIGNING <ls_qual>.
+      ASSERT NOT <ls_partner>-header-object_instance-bpartner IS INITIAL.
+      ls_database_qual-partner     = <ls_partner>-header-object_instance-bpartner.
+      ls_database_qual-qual_cntry  = <ls_qual>-data_key-qual_cntry.
+      ls_database_qual-status      = <ls_qual>-data-status.
+      ls_database_qual-issued_by   = <ls_qual>-data-issued_by.
+      ls_database_qual-issued_on   = <ls_qual>-data-issued_on.
+      APPEND ls_database_qual TO lt_database_qual.
+    ENDLOOP.
+
+    lt_current_qual = lt_database_qual.
+
+* Deletes
+    LOOP AT lt_del ASSIGNING <ls_data>.
+      READ TABLE lt_current_qual WITH KEY
+        partner         = <ls_data>-partner
+        qual_cntry         = <ls_data>-qual_cntry
+        ASSIGNING <ls_data_db>.
+      IF sy-subrc = 0.
+* delete record in target table
+        DELETE lt_current_qual INDEX sy-tabix.
+      ELSE.
+* record doesn't exist on DB -> must be a new one, keep data to be checked consistent
+        READ TABLE lt_ins WITH KEY
+        partner         = <ls_data>-partner
+        qual_cntry         = <ls_data>-qual_cntry
+         ASSIGNING <ls_data_db>.
+        IF sy-subrc = 0.
+          DELETE lt_current_qual INDEX sy-tabix.
+        ENDIF.
+      ENDIF.
+    ENDLOOP.
+
+* Inserts
+    LOOP AT lt_ins ASSIGNING <ls_data>.
+      READ TABLE lt_current_qual WITH KEY
+        partner         = <ls_data>-partner
+        qual_cntry         = <ls_data>-qual_cntry
+        ASSIGNING <ls_data_db>.
+* insert record into target table
+      IF sy-subrc NE 0.
+        INSERT <ls_data> INTO TABLE lt_current_qual.
+      ENDIF.
+    ENDLOOP.
+
+* Updates
+    LOOP AT lt_upd ASSIGNING <ls_data>.
+      READ TABLE lt_current_qual WITH KEY
+        partner         = <ls_data>-partner
+        qual_cntry         = <ls_data>-qual_cntry
+      ASSIGNING <ls_data_db>.
+* insert record into target table
+      IF sy-subrc NE 0.
+        <ls_data_db> = <ls_data>.
+      ENDIF.
+    ENDLOOP.
+    CHECK lt_current_qual IS NOT INITIAL AND lt_database_qual IS NOT INITIAL. "Pass activation error
+    CALL FUNCTION 'ZMDG_BP_FM_QUALC_UPDATE'
+      IN UPDATE TASK
+      TABLES
+        x_qualc = lt_current_qual
+        y_qualc = lt_database_qual.
+  ENDMETHOD.
