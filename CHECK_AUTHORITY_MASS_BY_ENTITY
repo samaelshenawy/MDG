@@ -1,0 +1,9 @@
+METHOD if_mdg_bs_bp_access_handler~check_authority_mass_by_entity.
+
+    IF iv_entity = gc_qualc_entity.
+      ef_check_executed = abap_true.
+      CLEAR: et_message, et_key_no_auth.
+    ELSE.
+      RETURN.
+    ENDIF.
+  ENDMETHOD.
